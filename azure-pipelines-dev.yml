@@ -1,0 +1,72 @@
+trigger:
+  branches:
+    include:
+      - dev
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - group: global-settings
+  - name: imageRepository
+    value: grpcui
+  - name: dockerfilePath
+    value: Dockerfile
+
+steps:
+  - checkout: self
+    fetchDepth: 0
+
+  - bash: |
+      set -euo pipefail
+
+      SHORT_SHA="$(echo "$(Build.SourceVersion)" | cut -c1-12)"
+      PRIMARY_TAG="dev-${SHORT_SHA}"
+      SECONDARY_TAG="dev-latest"
+
+      printf '%s\n' "${PRIMARY_TAG}" > "$(Build.SourcesDirectory)/VERSION"
+
+      REGISTRY_HOST="${ACR_LOGIN_SERVER%/}"
+      PREFIX="${ACR_PREFIX_DEV#/}"
+      PREFIX="${PREFIX%/}"
+
+      if [[ -n "${PREFIX}" ]]; then
+        IMAGE_REPOSITORY="${REGISTRY_HOST}/${PREFIX}/$(imageRepository)"
+      else
+        IMAGE_REPOSITORY="${REGISTRY_HOST}/$(imageRepository)"
+      fi
+
+      if [[ "${IMAGE_REPOSITORY}" == *"//"* ]]; then
+        echo "Resolved image repository is invalid: ${IMAGE_REPOSITORY}"
+        exit 1
+      fi
+
+      echo "Resolved image repository: ${IMAGE_REPOSITORY}"
+      echo "Resolved registry host: ${REGISTRY_HOST}"
+      echo "##vso[task.setvariable variable=REGISTRY_HOST]${REGISTRY_HOST}"
+      echo "##vso[task.setvariable variable=IMAGE_REPOSITORY]${IMAGE_REPOSITORY}"
+      echo "##vso[task.setvariable variable=PRIMARY_TAG]${PRIMARY_TAG}"
+      echo "##vso[task.setvariable variable=SECONDARY_TAG]${SECONDARY_TAG}"
+    displayName: Resolve dev image metadata
+
+  - bash: |
+      set -euo pipefail
+      echo "$(ACR_PASSWORD)" | docker login "$(REGISTRY_HOST)" --username "$(ACR_USERNAME)" --password-stdin
+    displayName: Login to ACR
+
+  - bash: |
+      set -euo pipefail
+      docker build \
+        -f "$(dockerfilePath)" \
+        -t "$(IMAGE_REPOSITORY):$(PRIMARY_TAG)" \
+        -t "$(IMAGE_REPOSITORY):$(SECONDARY_TAG)" \
+        "$(Build.SourcesDirectory)"
+    displayName: Build image
+
+  - bash: |
+      set -euo pipefail
+      docker push "$(IMAGE_REPOSITORY):$(PRIMARY_TAG)"
+      docker push "$(IMAGE_REPOSITORY):$(SECONDARY_TAG)"
+    displayName: Push image
